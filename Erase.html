@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Left→Right Eat Erase</title>
+<style>
+  html,body{
+    height:100%;
+    margin:0;
+    background:#000;
+    overflow:hidden;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+  }
+  /* canvas fills screen */
+  canvas{
+    display:block;
+    width:100%;
+    height:100%;
+    cursor:pointer;
+  }
+  /* small hint */
+  .hint{
+    position:fixed;
+    left:50%;
+    bottom:24px;
+    transform:translateX(-50%);
+    color:#888;
+    font-size:13px;
+    pointer-events:none;
+    user-select:none;
+    font-family:inherit;
+  }
+</style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="hint">Click to start the left→right wipe</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: true });
+  let DPR = Math.max(1, window.devicePixelRatio || 1);
+
+  function resize() {
+    DPR = Math.max(1, window.devicePixelRatio || 1);
+    const w = Math.floor(innerWidth * DPR);
+    const h = Math.floor(innerHeight * DPR);
+    canvas.width = w;
+    canvas.height = h;
+    canvas.style.width = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    drawStatic();
+  }
+  addEventListener('resize', resize, { passive: true });
+
+  // --- Text settings ---
+  const text = "Click Me"; // change text here
+  const fontSize = Math.round(Math.max(28, Math.min(innerWidth/12, 110)));
+  let textBox = null;
+
+  function measureTextStyle() {
+    const f = Math.round(Math.max(28, Math.min(innerWidth/12, 110)));
+    return { font: `800 ${f}px Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial`, size: f };
+  }
+
+  function drawStatic() {
+    ctx.save();
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0,0,canvas.width/DPR, canvas.height/DPR);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0,0,canvas.width/DPR, canvas.height/DPR);
+
+    const style = measureTextStyle();
+    ctx.font = style.font;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'white';
+    const cx = innerWidth / 2;
+    const cy = innerHeight / 2;
+    ctx.fillText(text, cx, cy);
+
+    const metrics = ctx.measureText(text);
+    const textW = metrics.width;
+    const textH = style.size * 1.1;
+    textBox = {
+      left: cx - textW/2,
+      top: cy - textH/2,
+      width: textW,
+      height: textH,
+      right: cx + textW/2,
+      bottom: cy + textH/2,
+      cx, cy
+    };
+    ctx.restore();
+  }
+
+  let particles = [];
+  let anim = null;
+  let running = false;
+
+  const sweepSpeed = 120; // px/sec — lower = slower sweep
+  const particleDensity = 2.6; // higher => more particles per vertical pixel
+  const particleRadius = [0.6, 2.6]; // particle sizes
+  const particleLife = [1.5, 3.6]; // seconds
+  const dustColor = 'rgba(255,255,255,0.14)'; // light visible dust (optional visual)
+  const eraseRadius = 8; // size of eraser blur done via destination-out
+
+  function rand(a,b){ return a + Math.random()*(b-a); }
+
+  function spawnFrontParticles(x) {
+    const tb = textBox;
+    if (!tb) return;
+    const yStart = Math.max(0, tb.top - tb.height * 0.5);
+    const yEnd = Math.min(innerHeight, tb.bottom + tb.height * 0.5);
+    const span = yEnd - yStart;
+    const count = Math.floor(span * particleDensity);
+    for (let i=0;i<count;i++){
+      const py = yStart + Math.random() * span;
+      const vx = rand(sweepSpeed*0.6, sweepSpeed*1.1) / 60;
+      const vy = rand(-8,8) / 60;
+      particles.push({
+        x: x + rand(-4,4),
+        y: py + rand(-3,3),
+        vx: vx, vy: vy,
+        r: rand(particleRadius[0], particleRadius[1]),
+        life: rand(particleLife[0], particleLife[1]),
+        age: 0,
+        alpha: 1
+      });
+    }
+  }
+
+  let sweepX = null;
+  let lastT = null;
+  function loop(t) {
+    if (!lastT) lastT = t;
+    const dt = Math.min(0.05, (t - lastT)/1000);
+    lastT = t;
+
+    if (sweepX !== null) {
+      spawnFrontParticles(sweepX);
+      sweepX += sweepSpeed * dt;
+    }
+
+    ctx.save();
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.globalCompositeOperation = 'source-over';
+    for (let i=particles.length-1;i>=0;i--){
+      const p = particles[i];
+      p.x += p.vx * 60 * dt * 0.35; 
+      p.y += p.vy * 60 * dt * 0.35;
+      p.age += dt;
+      p.alpha = Math.max(0, 1 - p.age / p.life);
+
+      ctx.globalAlpha = Math.min(0.2, p.alpha * 0.2);
+      const s = Math.max(0.4, p.r * 0.6);
+      ctx.fillStyle = dustColor;
+      ctx.fillRect(p.x - s/2, p.y - s/2, s, s);
+
+      if (p.age >= p.life) particles.splice(i,1);
+    }
+    ctx.restore();
+
+  
+    ctx.save();
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.globalCompositeOperation = 'destination-out';
+    for (let i=0;i<particles.length;i++){
+      const p = particles[i];
+
+      const rr = Math.max(eraseRadius * 0.6, p.r * 2);
+      ctx.globalAlpha = Math.max(0.15, Math.min(1, 0.9 * (1 - p.age / p.life)));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, rr * (0.6 + Math.random()*0.6), 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    if (sweepX !== null && textBox && sweepX > textBox.right + Math.max(60, textBox.width*0.2)) {
+
+      if (particles.length === 0) {
+
+        ctx.save();
+        ctx.setTransform(DPR,0,0,DPR,0,0);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0,0,canvas.width/DPR, canvas.height/DPR);
+        ctx.restore();
+        running = false;
+        sweepX = null;
+        lastT = null;
+        cancelAnimationFrame(anim);
+        anim = null;
+        return;
+      }
+    }
+
+    anim = requestAnimationFrame(loop);
+  }
+
+  function startSweep() {
+    if (running) return;
+    running = true;
+    drawStatic();
+    sweepX = Math.max(0, (textBox.left || 40) - 12);
+    spawnFrontParticles(sweepX - 6);
+    lastT = null;
+    if (!anim) anim = requestAnimationFrame(loop);
+  }
+
+  resize();
+
+  canvas.addEventListener('click', (e) => {
+    startSweep();
+  });
+
+  addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      startSweep();
+    }
+  });
+
+  window.addEventListener('orientationchange', resize);
+})();
+</script>
+</body>
+</html>
