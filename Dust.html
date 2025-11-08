@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Dust-click text</title>
+<style>
+  /* Page */
+  html,body {
+    height:100%;
+    margin:0;
+    background:#000;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    -webkit-font-smoothing:antialiased;
+    -moz-osx-font-smoothing:grayscale;
+  }
+
+  /* Center container */
+  .stage {
+    height:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    position:relative;
+    overflow:hidden;
+  }
+
+  /* Clickable text */
+  .text {
+    color:#fff;
+    font-size:clamp(36px, 8vw, 120px);
+    font-weight:700;
+    cursor:pointer;
+    user-select:none;
+    line-height:1;
+    text-align:center;
+    transition:opacity 0.25s linear;
+    pointer-events:auto;
+    z-index:1;
+  }
+
+  /* Canvas sits on top (particles) */
+  canvas.particles {
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    display:block;
+    z-index:2;
+    pointer-events:none;
+  }
+
+  /* A subtle instruction (optional) */
+  .hint {
+    position:absolute;
+    bottom:30px;
+    left:50%;
+    transform:translateX(-50%);
+    color:#888;
+    font-size:14px;
+    z-index:3;
+    user-select:none;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="text" id="text">Click Me</div>
+    <canvas class="particles" id="particles"></canvas>
+    <div class="hint">Click the text to turn it into dust</div>
+  </div>
+
+<script>
+/*
+  Approach:
+  1. Draw the same text to an offscreen canvas.
+  2. Sample pixels and create particles where the text pixels are opaque.
+  3. Animate particles with gravity + wind + fading to create "dust blown away".
+  4. Hide the original DOM text after capturing pixels so the particle dust is visible.
+*/
+
+const textEl = document.getElementById('text');
+const canvas = document.getElementById('particles');
+const ctx = canvas.getContext('2d', { alpha: true });
+
+let dpr = Math.max(1, window.devicePixelRatio || 1);
+
+function resizeCanvas() {
+  dpr = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = Math.floor(canvas.clientWidth * dpr);
+  canvas.height = Math.floor(canvas.clientHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+/* Particle system state */
+let particles = [];
+let animId = null;
+
+/* Utility: rand between */
+const rand = (a,b) => a + Math.random() * (b - a);
+
+/* Create particles by rasterizing the text */
+function emitTextParticles() {
+  // Get text size & style to match visual
+  const rect = textEl.getBoundingClientRect();
+  const style = getComputedStyle(textEl);
+
+  // Offscreen canvas sized to the text bounding box
+  const w = Math.ceil(rect.width);
+  const h = Math.ceil(rect.height);
+  if (w === 0 || h === 0) return [];
+
+  const off = document.createElement('canvas');
+  const offCtx = off.getContext('2d');
+
+  // Use DPR for sharper sampling
+  off.width = Math.floor(w * dpr);
+  off.height = Math.floor(h * dpr);
+  offCtx.scale(dpr, dpr);
+
+  // Match font and alignment
+  const fontSize = style.fontSize;
+  const fontFamily = style.fontFamily;
+  const fontWeight = style.fontWeight;
+  offCtx.font = `${fontWeight} ${fontSize} ${fontFamily}`;
+  offCtx.textBaseline = 'top';
+  offCtx.fillStyle = 'white';
+
+  // Draw text at 0,0 in the offscreen canvas
+  offCtx.fillText(textEl.innerText, 0, 0);
+
+  // INCREASED DENSITY: Much smaller step = more particles
+  const step = Math.max(1, Math.round(0.8 + (w / 400))); // reduced from 2 + (w/120)
+  const pixels = offCtx.getImageData(0, 0, off.width, off.height).data;
+
+  // Transform offsets: canvas uses whole page coordinates; we need text position relative to document
+  const pageX = rect.left + window.scrollX;
+  const pageY = rect.top + window.scrollY;
+
+  const out = [];
+  // iterate over the offscreen canvas pixels (at 1x CSS scale)
+  for (let y = 0; y < h; y += step) {
+    for (let x = 0; x < w; x += step) {
+      const ix = (Math.floor(y * dpr) * off.width + Math.floor(x * dpr)) * 4;
+      const alpha = pixels[ix + 3];
+      if (alpha > 50) { // threshold to find solid pixels
+        // Create multiple particles per sampled pixel for extra density
+        const particlesPerPixel = 2; // create 2-3 particles per pixel
+        for (let p = 0; p < particlesPerPixel; p++) {
+          out.push({
+            x: pageX + x + rand(-1.5, 1.5),
+            y: pageY + y + rand(-1.5, 1.5),
+            vx: rand(-2, 2),
+            vy: rand(-4, -0.3),
+            size: rand(0.5, step * 1.2),
+            life: rand(1.2, 3.0),   // longer life
+            age: 0,
+            alpha: 1,
+            color: `rgba(255,255,255,1)`
+          });
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
+/* Convert page coordinates to canvas coordinates (consider bounding box of canvas) */
+function pageToCanvas(px, py) {
+  const cRect = canvas.getBoundingClientRect();
+  const cx = (px - cRect.left);
+  const cy = (py - cRect.top);
+  return { x: cx, y: cy };
+}
+
+/* Animation loop */
+let lastTime = null;
+function animate(t) {
+  if (!lastTime) lastTime = t;
+  const dt = Math.min(0.05, (t - lastTime) / 1000); // seconds, cap dt
+  lastTime = t;
+
+  // Clear canvas (transparent)
+  ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+
+  // Global wind: gentle sinusoidal wind that changes over time
+  const timeSec = t / 1000;
+  const windX = Math.sin(timeSec * 1.2) * 60; // px/sec peak
+  const windY = -20; // slight upward bias
+
+  // Update + draw particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    // acceleration from wind + gravity
+    p.vx += (windX * 0.02) * dt + rand(-8, 8) * 0.01 * dt; // increased randomness
+    p.vy += (windY * 0.02 + 40 * 0.02) * dt; // gravity downward (40 px/s^2) with upward offset
+    // update position
+    p.x += p.vx * dt * 60; // multiply so speeds look natural
+    p.y += p.vy * dt * 60;
+
+    // age & fade
+    p.age += dt;
+    p.alpha = Math.max(0, 1 - p.age / p.life);
+
+    // draw as a soft rectangle (dust speck)
+    const cpos = pageToCanvas(p.x, p.y);
+    ctx.save();
+    ctx.globalAlpha = p.alpha * 0.9; // slightly more opaque
+    ctx.translate(cpos.x, cpos.y);
+    // rotate slightly by velocity for variety
+    ctx.rotate((p.vx + p.vy) * 0.01);
+    // draw particle (small square)
+    ctx.fillStyle = p.color;
+    const s = Math.max(0.4, p.size * 0.7);
+    ctx.fillRect(-s/2, -s/2, s, s);
+    ctx.restore();
+
+    // remove if faded
+    if (p.age >= p.life || p.alpha <= 0.01) {
+      particles.splice(i, 1);
+    }
+  }
+
+  // stop loop when no particles left
+  if (particles.length > 0) {
+    animId = requestAnimationFrame(animate);
+  } else {
+    animId = null;
+  }
+}
+
+/* On text click: create particles then hide text */
+textEl.addEventListener('click', (e) => {
+  // Prevent re-trigger
+  if (textEl.dataset.dead === "1") return;
+  textEl.dataset.dead = "1";
+
+  // create particles from rasterized text
+  const newParticles = emitTextParticles();
+
+  // map particle page coords to current canvas coords (we store page coords; conversion happens in draw)
+  particles.push(...newParticles);
+
+  // Fade out the DOM text slightly to avoid overlap
+  textEl.style.opacity = '0';
+  textEl.style.pointerEvents = 'none';
+
+  // Slight delay before removing, so user sees fade
+  setTimeout(() => {
+    // Optionally remove the element from the DOM to be clean
+    if (textEl.parentNode) textEl.parentNode.removeChild(textEl);
+  }, 300);
+
+  // Kickstart animation loop if not running
+  if (!animId) {
+    lastTime = null;
+    animId = requestAnimationFrame(animate);
+  }
+});
+
+/* Extra: allow clicking anywhere to produce a little puff from the clicked point (fun) */
+canvas.addEventListener('click', (ev) => {
+  // small explosion for clicks outside text (optional)
+  if (ev.target === canvas && (textEl.dataset.dead === "1")) {
+    const x = ev.clientX + window.scrollX;
+    const y = ev.clientY + window.scrollY;
+    const count = 60; // doubled from 30
+    for (let i = 0; i < count; i++) {
+      particles.push({
+        x: x + rand(-5, 5),
+        y: y + rand(-5, 5),
+        vx: rand(-8, 8),
+        vy: rand(-8, 8),
+        size: rand(0.6, 4),
+        life: rand(0.8, 1.8),
+        age: 0,
+        alpha: 1,
+        color: 'rgba(255,255,255,1)'
+      });
+    }
+    if (!animId) {
+      lastTime = null;
+      animId = requestAnimationFrame(animate);
+    }
+  }
+});
+
+/* Small accessibility: pressing Enter or Space while focus on text triggers click */
+textEl.tabIndex = 0;
+textEl.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault();
+    textEl.click();
+  }
+});
+</script>
+</body>
+</html>
